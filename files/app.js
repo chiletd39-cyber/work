@@ -47,7 +47,16 @@ function showScreen(screen) {
   screen.classList.add("active");
 }
 
-// ── 5. JOIN LOGIC ──────────────────────────────────────────
+// ── 5. LOAD FROM LOCAL STORAGE ────────────────────────────
+window.addEventListener("DOMContentLoaded", () => {
+  const savedUsername = localStorage.getItem("chatUsername");
+  const savedRoom = localStorage.getItem("chatRoom");
+  
+  if (savedUsername) usernameInput.value = savedUsername;
+  if (savedRoom) roomInput.value = savedRoom;
+});
+
+// ── 6. JOIN LOGIC ──────────────────────────────────────────
 joinBtn.addEventListener("click", handleJoin);
 usernameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") handleJoin(); });
 roomInput.addEventListener("keydown", (e) => { if (e.key === "Enter") handleJoin(); });
@@ -62,11 +71,14 @@ function handleJoin() {
     return;
   }
 
+  localStorage.setItem("chatUsername", username);
+  localStorage.setItem("chatRoom", room);
+
   joinError.textContent = "";
   socket.emit("user:join", { username, room });
 }
 
-// ── 6. SEND MESSAGE LOGIC ──────────────────────────────────
+// ── 7. SEND MESSAGE LOGIC ──────────────────────────────────
 sendBtn.addEventListener("click", sendMessage);
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -86,7 +98,7 @@ function sendMessage() {
   stopTyping();
 }
 
-// ── 7. TYPING INDICATOR ────────────────────────────────────
+// ── 8. TYPING INDICATOR ────────────────────────────────────
 messageInput.addEventListener("input", () => {
   if (!isTyping) {
     isTyping = true;
@@ -105,7 +117,7 @@ function stopTyping() {
   clearTimeout(typingTimeout);
 }
 
-// ── 8. ROOM SWITCHING ─────────────────────────────────────
+// ── 9. ROOM SWITCHING ─────────────────────────────────────
 newRoomBtn.addEventListener("click", switchRoom);
 newRoomInput.addEventListener("keydown", (e) => { if (e.key === "Enter") switchRoom(); });
 
@@ -121,13 +133,16 @@ function switchRoomFromList(room) {
   socket.emit("room:switch", { newRoom: room });
 }
 
-// ── 9. LEAVE CHAT ──────────────────────────────────────────
+// ── 10. LEAVE CHAT ──────────────────────────────────────────
 leaveBtn.addEventListener("click", () => {
   socket.disconnect();
 
   myUsername = "";
   currentRoom = "General";
   lastAuthor  = null;
+
+  localStorage.removeItem("chatUsername");
+  localStorage.removeItem("chatRoom");
 
   messagesContainer.innerHTML = `
     <div class="welcome-message">
@@ -144,7 +159,7 @@ leaveBtn.addEventListener("click", () => {
   socket.connect();
 });
 
-// ── 10. SIDEBAR TOGGLE ────────────────────────────
+// ── 11. SIDEBAR TOGGLE ────────────────────────────
 sidebarToggle.addEventListener("click", () => {
   sidebar.classList.toggle("open");
 });
@@ -155,8 +170,67 @@ document.addEventListener("click", (e) => {
   }
 });
 
-// ── 11. RENDER MESSAGES ────────────────────────────
+// ── 12. RENDER MESSAGES ────────────────────────────
 function renderMessage(msg) {
+  const welcome = messagesContainer.querySelector(".welcome-message");
+  if (welcome) welcome.remove();
+
+  if (msg.type === "system") {
+    const el = document.createElement("div");
+    el.className = "msg-system";
+    el.textContent = msg.text;
+    messagesContainer.appendChild(el);
+    lastAuthor = null;
+  } else {
+    const isMine   = msg.username === myUsername;
+    const isConsec = lastAuthor === msg.username;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = `msg-wrapper ${isMine ? "mine" : "other"}${isConsec ? " consecutive" : ""}`;
+
+    wrapper.innerHTML = `
+      <div class="msg-meta">
+        <span class="msg-author">${escapeHtml(msg.username)}</span>
+        <span class="msg-time">${msg.timestamp}</span>
+      </div>
+      <div class="msg-bubble">${escapeHtml(msg.text)}</div>
+    `;
+
+    messagesContainer.appendChild(wrapper);
+    lastAuthor = msg.username;
+  }
+
+  saveMessageToLocalStorage(msg);
+  scrollToBottom();
+}
+
+function renderHistory(messages) {
+  messagesContainer.innerHTML = "";
+  lastAuthor = null;
+
+  if (!messages || messages.length === 0) {
+    const localMessages = getLocalMessages();
+    if (localMessages.length > 0) {
+      localMessages.forEach(msg => {
+        renderMessageWithoutSaving(msg);
+      });
+      return;
+    }
+    messagesContainer.innerHTML = `
+      <div class="welcome-message">
+        <span>🎉</span>
+        <p>No messages yet. Start the conversation!</p>
+      </div>`;
+    return;
+  }
+
+  messages.forEach(msg => {
+    renderMessageWithoutSaving(msg);
+    saveMessageToLocalStorage(msg);
+  });
+}
+
+function renderMessageWithoutSaving(msg) {
   const welcome = messagesContainer.querySelector(".welcome-message");
   if (welcome) welcome.remove();
 
@@ -188,23 +262,7 @@ function renderMessage(msg) {
   scrollToBottom();
 }
 
-function renderHistory(messages) {
-  messagesContainer.innerHTML = "";
-  lastAuthor = null;
-
-  if (!messages || messages.length === 0) {
-    messagesContainer.innerHTML = `
-      <div class="welcome-message">
-        <span>🎉</span>
-        <p>No messages yet. Start the conversation!</p>
-      </div>`;
-    return;
-  }
-
-  messages.forEach(renderMessage);
-}
-
-// ── 12. RENDER SIDEBAR ────────────────────────────
+// ── 13. RENDER SIDEBAR ────────────────────────────
 function renderUsers(users) {
   onlineCount.textContent = users.length;
   usersList.innerHTML = users.map(u => `<li>${escapeHtml(u)}</li>`).join("");
@@ -229,7 +287,7 @@ function renderRooms(rooms) {
   });
 }
 
-// ── 13. HELPERS ────────────────────────────
+// ── 14. HELPERS ────────────────────────────
 function scrollToBottom() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
@@ -243,7 +301,20 @@ function escapeHtml(str) {
     .replace(/'/g,  "&#39;");
 }
 
-// ── 14. SOCKET EVENTS ────────────────────────────
+function saveMessageToLocalStorage(msg) {
+  const key = `chatMessages_${currentRoom}`;
+  const messages = JSON.parse(localStorage.getItem(key) || "[]");
+  messages.push(msg);
+  if (messages.length > 50) messages.shift();
+  localStorage.setItem(key, JSON.stringify(messages));
+}
+
+function getLocalMessages() {
+  const key = `chatMessages_${currentRoom}`;
+  return JSON.parse(localStorage.getItem(key) || "[]");
+}
+
+// ── 15. SOCKET EVENTS ────────────────────────────
 
 // Join success
 socket.on("user:joined", ({ username, room }) => {
@@ -256,6 +327,11 @@ socket.on("user:joined", ({ username, room }) => {
 
   myUsernameDisplay.textContent  = username;
   currentRoomDisplay.textContent = room;
+
+  const localMessages = getLocalMessages();
+  if (localMessages.length > 0) {
+    renderHistory(localMessages);
+  }
 
   showScreen(chatScreen);
   messageInput.focus();
