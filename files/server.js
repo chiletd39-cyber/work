@@ -16,7 +16,7 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 // ── 2. Serve Static Frontend Files ───────────────────────
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(__dirname));
 
 // ── 3. In-Memory State ────────────────────────────────────
 const users = {};         // { socketId: { username, room } }
