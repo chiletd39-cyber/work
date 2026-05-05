@@ -292,7 +292,7 @@ socket.on("user:typing", ({ username, isTyping: typing }) => {
   }
 });
 
-// Error from server
+// Error checking
 socket.on("error:message", (msg) => {
   joinError.textContent = msg;
 });
