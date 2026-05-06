@@ -36,9 +36,10 @@ const sidebar             = document.querySelector(".sidebar");
 // ── 3. State ───────────────────────────────────────────────
 let myUsername    = "";
 let currentRoom   = "General";
-let lastAuthor    = null;    // for grouping consecutive messages
+let lastAuthor    = null;
 let typingTimeout = null;
 let isTyping      = false;
+const typingUsers = new Set();
 
 // ── 4. Show / Hide Screens ────────────────────────────────
 function showScreen(screen) {
@@ -46,10 +47,19 @@ function showScreen(screen) {
   screen.classList.add("active");
 }
 
-// ── 5. JOIN LOGIC ──────────────────────────────────────────
+// ── 5. LOAD FROM LOCAL STORAGE ────────────────────────────
+window.addEventListener("DOMContentLoaded", () => {
+  const savedUsername = localStorage.getItem("chatUsername");
+  const savedRoom = localStorage.getItem("chatRoom");
+  
+  if (savedUsername) usernameInput.value = savedUsername;
+  if (savedRoom) roomInput.value = savedRoom;
+});
+
+// ── 6. JOIN LOGIC ──────────────────────────────────────────
 joinBtn.addEventListener("click", handleJoin);
 usernameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") handleJoin(); });
-roomInput.addEventListener("keydown",     (e) => { if (e.key === "Enter") handleJoin(); });
+roomInput.addEventListener("keydown", (e) => { if (e.key === "Enter") handleJoin(); });
 
 function handleJoin() {
   const username = usernameInput.value.trim();
@@ -61,11 +71,14 @@ function handleJoin() {
     return;
   }
 
+  localStorage.setItem("chatUsername", username);
+  localStorage.setItem("chatRoom", room);
+
   joinError.textContent = "";
   socket.emit("user:join", { username, room });
 }
 
-// ── 6. SEND MESSAGE LOGIC ──────────────────────────────────
+// ── 7. SEND MESSAGE LOGIC ──────────────────────────────────
 sendBtn.addEventListener("click", sendMessage);
 messageInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
@@ -82,15 +95,14 @@ function sendMessage() {
   messageInput.value = "";
   messageInput.focus();
 
-  // Stop typing indicator when message is sent
   stopTyping();
 }
 
-// ── 7. TYPING INDICATOR ────────────────────────────────────
+// ── 8. TYPING INDICATOR ────────────────────────────────────
 messageInput.addEventListener("input", () => {
   if (!isTyping) {
     isTyping = true;
-    socket.emit("user:typing", true);
+    socket.emit("user:typing", { isTyping: true });
   }
 
   clearTimeout(typingTimeout);
@@ -100,12 +112,12 @@ messageInput.addEventListener("input", () => {
 function stopTyping() {
   if (isTyping) {
     isTyping = false;
-    socket.emit("user:typing", false);
+    socket.emit("user:typing", { isTyping: false });
   }
   clearTimeout(typingTimeout);
 }
 
-// ── 8. ROOM SWITCHING ─────────────────────────────────────
+// ── 9. ROOM SWITCHING ─────────────────────────────────────
 newRoomBtn.addEventListener("click", switchRoom);
 newRoomInput.addEventListener("keydown", (e) => { if (e.key === "Enter") switchRoom(); });
 
@@ -117,61 +129,124 @@ function switchRoom() {
 }
 
 function switchRoomFromList(room) {
-  if (room === currentRoom) return;
+  if (!room || room === currentRoom) return;
   socket.emit("room:switch", { newRoom: room });
 }
 
-// ── 9. LEAVE CHAT ──────────────────────────────────────────
+// ── 10. LEAVE CHAT ──────────────────────────────────────────
 leaveBtn.addEventListener("click", () => {
   socket.disconnect();
+
   myUsername = "";
   currentRoom = "General";
   lastAuthor  = null;
+
+  localStorage.removeItem("chatUsername");
+  localStorage.removeItem("chatRoom");
+
   messagesContainer.innerHTML = `
     <div class="welcome-message">
       <span>🎉</span>
       <p>Welcome! Messages will appear here.</p>
     </div>`;
+
   showScreen(joinScreen);
+
   usernameInput.value = "";
   roomInput.value     = "";
   usernameInput.focus();
-  // Reconnect for next join
+
   socket.connect();
 });
 
-// ── 10. SIDEBAR TOGGLE (mobile) ────────────────────────────
+// ── 11. SIDEBAR TOGGLE ────────────────────────────
 sidebarToggle.addEventListener("click", () => {
   sidebar.classList.toggle("open");
 });
+
 document.addEventListener("click", (e) => {
   if (!sidebar.contains(e.target) && e.target !== sidebarToggle) {
     sidebar.classList.remove("open");
   }
 });
 
-// ── 11. RENDER MESSAGES ────────────────────────────────────
-
-/** Render a single message object into the chat */
+// ── 12. RENDER MESSAGES ────────────────────────────
 function renderMessage(msg) {
-  // Remove welcome placeholder if present
   const welcome = messagesContainer.querySelector(".welcome-message");
   if (welcome) welcome.remove();
 
   if (msg.type === "system") {
-    // System notification (join/leave)
     const el = document.createElement("div");
     el.className = "msg-system";
     el.textContent = msg.text;
     messagesContainer.appendChild(el);
     lastAuthor = null;
   } else {
-    // User message
-    const isMine       = msg.username === myUsername;
-    const isConsec     = lastAuthor === msg.username;
-    const wrapper      = document.createElement("div");
+    const isMine   = msg.username === myUsername;
+    const isConsec = lastAuthor === msg.username;
 
+    const wrapper = document.createElement("div");
     wrapper.className = `msg-wrapper ${isMine ? "mine" : "other"}${isConsec ? " consecutive" : ""}`;
+
+    wrapper.innerHTML = `
+      <div class="msg-meta">
+        <span class="msg-author">${escapeHtml(msg.username)}</span>
+        <span class="msg-time">${msg.timestamp}</span>
+      </div>
+      <div class="msg-bubble">${escapeHtml(msg.text)}</div>
+    `;
+
+    messagesContainer.appendChild(wrapper);
+    lastAuthor = msg.username;
+  }
+
+  saveMessageToLocalStorage(msg);
+  scrollToBottom();
+}
+
+function renderHistory(messages) {
+  messagesContainer.innerHTML = "";
+  lastAuthor = null;
+
+  if (!messages || messages.length === 0) {
+    const localMessages = getLocalMessages();
+    if (localMessages.length > 0) {
+      localMessages.forEach(msg => {
+        renderMessageWithoutSaving(msg);
+      });
+      return;
+    }
+    messagesContainer.innerHTML = `
+      <div class="welcome-message">
+        <span>🎉</span>
+        <p>No messages yet. Start the conversation!</p>
+      </div>`;
+    return;
+  }
+
+  messages.forEach(msg => {
+    renderMessageWithoutSaving(msg);
+    saveMessageToLocalStorage(msg);
+  });
+}
+
+function renderMessageWithoutSaving(msg) {
+  const welcome = messagesContainer.querySelector(".welcome-message");
+  if (welcome) welcome.remove();
+
+  if (msg.type === "system") {
+    const el = document.createElement("div");
+    el.className = "msg-system";
+    el.textContent = msg.text;
+    messagesContainer.appendChild(el);
+    lastAuthor = null;
+  } else {
+    const isMine   = msg.username === myUsername;
+    const isConsec = lastAuthor === msg.username;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = `msg-wrapper ${isMine ? "mine" : "other"}${isConsec ? " consecutive" : ""}`;
+
     wrapper.innerHTML = `
       <div class="msg-meta">
         <span class="msg-author">${escapeHtml(msg.username)}</span>
@@ -187,49 +262,36 @@ function renderMessage(msg) {
   scrollToBottom();
 }
 
-/** Render an array of messages (chat history) */
-function renderHistory(messages) {
-  messagesContainer.innerHTML = "";
-  lastAuthor = null;
-
-  if (!messages || messages.length === 0) {
-    messagesContainer.innerHTML = `
-      <div class="welcome-message">
-        <span>🎉</span>
-        <p>No messages yet. Start the conversation!</p>
-      </div>`;
-    return;
-  }
-
-  messages.forEach(renderMessage);
-}
-
-// ── 12. RENDER SIDEBAR ────────────────────────────────────
-
+// ── 13. RENDER SIDEBAR ────────────────────────────
 function renderUsers(users) {
   onlineCount.textContent = users.length;
-  usersList.innerHTML = users
-    .map((u) => `<li>${escapeHtml(u)}</li>`)
-    .join("");
+  usersList.innerHTML = users.map(u => `<li>${escapeHtml(u)}</li>`).join("");
 }
 
 function renderRooms(rooms) {
-  roomsList.innerHTML = rooms
-    .map((r) => `
-      <li class="${r === currentRoom ? "active" : ""}" onclick="switchRoomFromList('${escapeHtml(r)}')">
-        # ${escapeHtml(r)}
-      </li>
-    `)
-    .join("");
+  roomsList.innerHTML = "";
+
+  rooms.forEach((r) => {
+    const li = document.createElement("li");
+    li.textContent = `# ${r}`;
+
+    if (r === currentRoom) {
+      li.classList.add("active");
+    }
+
+    li.addEventListener("click", () => {
+      switchRoomFromList(r);
+    });
+
+    roomsList.appendChild(li);
+  });
 }
 
-// ── 13. HELPERS ───────────────────────────────────────────
-
+// ── 14. HELPERS ────────────────────────────
 function scrollToBottom() {
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-/** Simple HTML escape to prevent XSS */
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g,  "&amp;")
@@ -239,44 +301,66 @@ function escapeHtml(str) {
     .replace(/'/g,  "&#39;");
 }
 
-// ── 14. SOCKET EVENT LISTENERS ────────────────────────────
+function saveMessageToLocalStorage(msg) {
+  const key = `chatMessages_${currentRoom}`;
+  const messages = JSON.parse(localStorage.getItem(key) || "[]");
+  messages.push(msg);
+  if (messages.length > 50) messages.shift();
+  localStorage.setItem(key, JSON.stringify(messages));
+}
 
-// Confirmed join
+function getLocalMessages() {
+  const key = `chatMessages_${currentRoom}`;
+  return JSON.parse(localStorage.getItem(key) || "[]");
+}
+
+// ── 15. SOCKET EVENTS ────────────────────────────
+
+// Join success
 socket.on("user:joined", ({ username, room }) => {
-  myUsername    = username;
-  currentRoom   = room;
-  lastAuthor    = null;
+  myUsername  = username;
+  currentRoom = room;
+  lastAuthor  = null;
+
+  typingUsers.clear();
+  typingIndicator.textContent = "";
 
   myUsernameDisplay.textContent  = username;
   currentRoomDisplay.textContent = room;
+
+  const localMessages = getLocalMessages();
+  if (localMessages.length > 0) {
+    renderHistory(localMessages);
+  }
 
   showScreen(chatScreen);
   messageInput.focus();
 });
 
-// Chat history on room join
+// History
 socket.on("chat:history", (messages) => {
   renderHistory(messages);
 });
 
-// New incoming message
+// New message
 socket.on("chat:message", (msg) => {
   renderMessage(msg);
 });
 
-// Room users list updated
+// Users update
 socket.on("room:users", ({ users }) => {
   renderUsers(users);
 });
 
-// All rooms list updated
+// Rooms update
 socket.on("rooms:list", (rooms) => {
   renderRooms(rooms);
 });
 
-// Typing indicator from others
-const typingUsers = new Set();
+// Typing indicator
 socket.on("user:typing", ({ username, isTyping: typing }) => {
+  if (username === myUsername) return;
+
   if (typing) {
     typingUsers.add(username);
   } else {
@@ -292,7 +376,7 @@ socket.on("user:typing", ({ username, isTyping: typing }) => {
   }
 });
 
-// Error from server
+// Error
 socket.on("error:message", (msg) => {
   joinError.textContent = msg;
 });
@@ -300,10 +384,10 @@ socket.on("error:message", (msg) => {
 // Connection status
 socket.on("connect", () => {
   connectionStatus.className = "status-dot connected";
-  connectionStatus.title     = "Connected";
+  connectionStatus.title = "Connected";
 });
 
 socket.on("disconnect", () => {
   connectionStatus.className = "status-dot disconnected";
-  connectionStatus.title     = "Disconnected";
+  connectionStatus.title = "Disconnected";
 });
